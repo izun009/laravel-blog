@@ -1,12 +1,25 @@
-FROM serversideup/php:8.3-fpm-nginx AS base
+FROM php:8.3-fpm
 
-# Switch to root so we can do root things
 USER root
 
-# Install the exif extension with root permissions
-RUN install-php-extensions exif
+# Set working directory
+WORKDIR /var/www
 
-# Install JavaScript dependencies
+# Install system dependencies and PHP extension libraries
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    libonig-dev \
+    libzip-dev \
+    zip \
+    unzip \
+    git \
+    curl \
+    vim \
+    jpegoptim optipng pngquant gifsicle
+
 ARG NODE_VERSION=20.18.0
 ENV PATH=/usr/local/node/bin:$PATH
 RUN curl -sL https://github.com/nodenv/node-build/archive/master.tar.gz | tar xz -C /tmp/ && \
@@ -14,23 +27,37 @@ RUN curl -sL https://github.com/nodenv/node-build/archive/master.tar.gz | tar xz
     corepack enable && \
     rm -rf /tmp/node-build-master
 
-# Drop back to our unprivileged user
-USER www-data
+# Install PHP extensions
+RUN docker-php-ext-install pdo_mysql mbstring zip exif pcntl
 
-FROM base
+# GD configuration must be done before installing
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg && \
+    docker-php-ext-install gd
 
-ENV SSL_MODE="off"
-ENV AUTORUN_ENABLED="true"
-ENV PHP_OPCACHE_ENABLE="1"
-ENV HEALTHCHECK_PATH="/up"
+# Install Composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-# Copy the app files...
-COPY --chown=www-data:www-data . /var/www/html
+# Create a non-root user
+RUN groupadd -g 1000 www && \
+    useradd -u 1000 -ms /bin/bash -g www www
 
-# Re-run install, but now with scripts and optimizing the autoloader (should be faster)...
+# Copy project files with correct ownership
+COPY --chown=www:www . /var/www
+
+# Install Composer dependencies inside image
 RUN composer install --no-interaction --prefer-dist --optimize-autoloader
 
 # Precompiling assets for production
 RUN yarn install --immutable && \
     yarn build && \
     rm -rf node_modules
+
+# Set correct permissions
+RUN chmod -R 775 storage bootstrap/cache || true
+
+# Switch to non-root user
+USER www
+
+# Expose port and run PHP-FPM
+EXPOSE 9000
+CMD ["php-fpm"]
